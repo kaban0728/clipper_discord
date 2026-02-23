@@ -42,7 +42,7 @@ class DiscordCompressorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Discord用 動画圧縮ツール")
-        self.root.geometry("450x300")
+        self.root.geometry("450x340")
         self.root.resizable(False, False)
 
         # UI構築
@@ -56,6 +56,14 @@ class DiscordCompressorApp:
         self.entry_size = tk.Entry(self.frame_size, width=5)
         self.entry_size.insert(0, "9.5")
         self.entry_size.pack(side=tk.LEFT, padx=5)
+
+        # 音声チャンネル設定
+        self.frame_audio = tk.Frame(root)
+        self.frame_audio.pack(pady=5)
+        tk.Label(self.frame_audio, text="音声チャンネル:").pack(side=tk.LEFT)
+        self.audio_channel = tk.StringVar(value="stereo")
+        tk.Radiobutton(self.frame_audio, text="ステレオ（変更なし）", variable=self.audio_channel, value="stereo").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(self.frame_audio, text="モノラル", variable=self.audio_channel, value="mono").pack(side=tk.LEFT, padx=5)
 
         # ボタンエリア
         self.btn_select = tk.Button(root, text="動画ファイルを選択して開始", command=self.select_file, height=2, bg="#e1e1e1")
@@ -187,8 +195,10 @@ class DiscordCompressorApp:
                 '-c:v', 'libx264', '-b:v', f'{int(video_bitrate)}',
                 '-maxrate', f'{int(video_bitrate * 1.5)}', '-bufsize', f'{int(video_bitrate * 2)}',
                 '-c:a', 'aac', '-b:a', f'{audio_kbps}k',
-                output_path
             ]
+            if self.audio_channel.get() == "mono":
+                cmd.extend(['-ac', '1'])
+            cmd.append(output_path)
             
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
