@@ -5,38 +5,445 @@ import subprocess
 import json
 import threading
 import sys
+import time
+import tempfile
 import urllib.request
 import zipfile
 import shutil
+import ctypes
+import cv2
+from PIL import Image, ImageTk
 
-# --- ユーティリティ関数（ここを修正！） ---
+# --- ユーティリティ関数 ---
 
 def get_base_path():
-    """
-    EXEファイルがある「本来の場所」を取得する。
-    PyInstallerの _MEIPASS (一時フォルダ) ではなく、
-    sys.executable (EXE本体のパス) のディレクトリを使う。
-    """
     if getattr(sys, 'frozen', False):
-        # EXEとして実行されている場合
         return os.path.dirname(sys.executable)
     else:
-        # 普通のPythonスクリプトとして実行されている場合
         return os.path.dirname(os.path.abspath(__file__))
 
 def get_tool_path(tool_name):
     if os.name == 'nt' and not tool_name.endswith('.exe'):
         tool_name += '.exe'
-    
-    # EXEの横にあるか探す
     local_path = os.path.join(get_base_path(), tool_name)
     if os.path.exists(local_path):
         return local_path
-    
-    # 環境変数パスも確認
     return shutil.which(tool_name)
 
-# --- GUIクラス ---
+def format_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02d}:{m:02d}:{s:05.2f}"
+
+
+# --- Windows MCI オーディオプレイヤー ---
+
+class AudioPlayer:
+    """Windows MCI を使ったシンプルな音声プレイヤー。"""
+    _counter = 0
+
+    def __init__(self):
+        AudioPlayer._counter += 1
+        self.alias = f"clip_audio_{AudioPlayer._counter}"
+        self.loaded = False
+
+    def load(self, filepath):
+        self.close()
+        filepath = os.path.abspath(filepath).replace('/', '\\')
+        err = self._mci(f'open "{filepath}" type waveaudio alias {self.alias}')
+        self.loaded = (err == 0)
+        return self.loaded
+
+    def play_from(self, seconds):
+        if self.loaded:
+            self._mci(f'seek {self.alias} to {int(seconds * 1000)}')
+            self._mci(f'play {self.alias}')
+
+    def stop(self):
+        if self.loaded:
+            self._mci(f'stop {self.alias}')
+
+    def close(self):
+        if self.loaded:
+            self._mci(f'stop {self.alias}')
+            self._mci(f'close {self.alias}')
+            self.loaded = False
+
+    @staticmethod
+    def _mci(cmd):
+        buf = ctypes.create_unicode_buffer(255)
+        return ctypes.windll.winmm.mciSendStringW(cmd, buf, 254, 0)
+
+
+# --- カスタム レンジスライダー ---
+
+class RangeSlider(tk.Canvas):
+    """1本のバー上に始点・終点・再生位置の3つのハンドルを持つスライダー。"""
+
+    def __init__(self, parent, min_val=0, max_val=100, width=620, height=50,
+                 command=None):
+        super().__init__(parent, width=width, height=height, highlightthickness=0)
+        self.min_val = float(min_val)
+        self.max_val = float(max_val)
+        self.start_val = float(min_val)
+        self.end_val = float(max_val)
+        self.pos_val = float(min_val)  # 再生位置
+        self.cw = width
+        self.ch = height
+        self.command = command  # callback(handle: 'start'|'end'|'pos', value)
+        self.pad = 14
+        self.hr = 10   # start/end handle radius
+        self.pr = 7    # pos handle radius
+        self.th = 6    # track height
+        self.dragging = None
+        self._draw()
+        self.bind('<ButtonPress-1>', self._press)
+        self.bind('<B1-Motion>', self._drag)
+        self.bind('<ButtonRelease-1>', self._release)
+
+    def _v2x(self, v):
+        r = self.max_val - self.min_val
+        return self.pad + (v - self.min_val) / max(r, 0.001) * (self.cw - 2 * self.pad)
+
+    def _x2v(self, x):
+        r = self.cw - 2 * self.pad
+        v = self.min_val + (x - self.pad) / max(r, 1) * (self.max_val - self.min_val)
+        return max(self.min_val, min(v, self.max_val))
+
+    def _draw(self):
+        self.delete('all')
+        cy = self.ch // 2
+        # トラック背景
+        self.create_rectangle(self.pad, cy - self.th//2,
+                              self.cw - self.pad, cy + self.th//2,
+                              fill='#e0e0e0', outline='#ccc')
+        sx, ex = self._v2x(self.start_val), self._v2x(self.end_val)
+        # 選択範囲
+        self.create_rectangle(sx, cy - self.th//2, ex, cy + self.th//2,
+                              fill='#5b9bd5', outline='')
+        # 再生位置ハンドル（白丸 + 青枠）
+        px = self._v2x(self.pos_val)
+        self.create_line(px, cy - 16, px, cy + 16, fill='#555', width=1)
+        self.create_oval(px - self.pr, cy - self.pr, px + self.pr, cy + self.pr,
+                         fill='white', outline='#007bff', width=2)
+        # 始点ハンドル（緑）
+        self.create_oval(sx - self.hr, cy - self.hr, sx + self.hr, cy + self.hr,
+                         fill='#28a745', outline='white', width=2)
+        # 終点ハンドル（赤）
+        self.create_oval(ex - self.hr, cy - self.hr, ex + self.hr, cy + self.hr,
+                         fill='#dc3545', outline='white', width=2)
+
+    def _press(self, event):
+        sx = self._v2x(self.start_val)
+        ex = self._v2x(self.end_val)
+        px = self._v2x(self.pos_val)
+        ds, de, dp = abs(event.x - sx), abs(event.x - ex), abs(event.x - px)
+        thr = self.hr * 3
+        # 最も近いハンドルを選択
+        candidates = [('start', ds), ('end', de), ('pos', dp)]
+        candidates.sort(key=lambda c: c[1])
+        best, dist = candidates[0]
+        if dist < thr:
+            self.dragging = best
+        else:
+            # バー上クリック → 再生位置を移動
+            self.dragging = 'pos'
+            self._drag(event)
+
+    def _drag(self, event):
+        if not self.dragging:
+            return
+        v = self._x2v(event.x)
+        if self.dragging == 'start':
+            self.start_val = max(self.min_val, min(v, self.end_val - 0.05))
+            # 始点が再生位置を追い越した場合、再生位置も移動
+            if self.pos_val < self.start_val:
+                self.pos_val = self.start_val
+        elif self.dragging == 'end':
+            self.end_val = min(self.max_val, max(v, self.start_val + 0.05))
+            if self.pos_val > self.end_val:
+                self.pos_val = self.end_val
+        else:  # pos
+            self.pos_val = max(self.start_val, min(v, self.end_val))
+        self._draw()
+        if self.command:
+            self.command(self.dragging,
+                         {'start': self.start_val, 'end': self.end_val,
+                          'pos': self.pos_val}[self.dragging])
+
+    def _release(self, event):
+        self.dragging = None
+
+    def get_start(self):
+        return self.start_val
+
+    def get_end(self):
+        return self.end_val
+
+    def get_pos(self):
+        return self.pos_val
+
+    def set_pos(self, v):
+        self.pos_val = max(self.start_val, min(v, self.end_val))
+        self._draw()
+
+    def set_playback_pos(self, v):
+        self.pos_val = v
+        self._draw()
+
+    def clear_playback_pos(self):
+        self._draw()
+
+
+# --- トリミングウィンドウ ---
+
+class TrimWindow:
+    PW, PH = 640, 360
+
+    def __init__(self, parent, video_path, callback):
+        self.callback = callback
+        self.video_path = video_path
+        self.playing = False
+        self.play_job = None
+        self.current_pos = 0.0
+        self.audio_player = AudioPlayer()
+        self.audio_ready = False
+        self.temp_audio = os.path.join(
+            tempfile.gettempdir(), f"clipper_preview_{os.getpid()}.wav"
+        )
+
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            messagebox.showerror("エラー", "動画を開けませんでした。")
+            callback(None)
+            return
+
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+        self.duration = self.total_frames / self.fps
+
+        # ウィンドウ
+        self.win = tk.Toplevel(parent)
+        self.win.title("トリミング — プレビュー")
+        self.win.resizable(False, False)
+        self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.win.grab_set()
+
+        # プレビュー
+        self.canvas = tk.Label(self.win, bg="black", width=self.PW, height=self.PH)
+        self.canvas.pack(padx=10, pady=(10, 5))
+
+        # 時間情報
+        fi = tk.Frame(self.win)
+        fi.pack(fill=tk.X, padx=15)
+        self.time_label = tk.Label(fi, text=f"00:00:00.00 / {format_time(self.duration)}",
+                                   font=("Consolas", 10))
+        self.time_label.pack(side=tk.LEFT)
+        self.range_label = tk.Label(fi, text=f"選択範囲: {format_time(self.duration)}",
+                                    font=("Consolas", 10), fg="#555")
+        self.range_label.pack(side=tk.RIGHT)
+
+        # レンジスライダー
+        self.slider = RangeSlider(self.win, 0, self.duration, width=640, height=50,
+                                  command=self.on_range_change)
+        self.slider.pack(padx=10)
+
+        # 始点/終点ラベル
+        fl = tk.Frame(self.win)
+        fl.pack(fill=tk.X, padx=25)
+        self.start_lbl = tk.Label(fl, text="● 始点: 00:00:00.00",
+                                   fg="#28a745", font=("Consolas", 9))
+        self.start_lbl.pack(side=tk.LEFT)
+        self.end_lbl = tk.Label(fl, text=f"● 終点: {format_time(self.duration)}",
+                                 fg="#dc3545", font=("Consolas", 9))
+        self.end_lbl.pack(side=tk.RIGHT)
+
+        # 再生コントロール
+        fc = tk.Frame(self.win)
+        fc.pack(pady=8)
+        self.btn_play = tk.Button(fc, text="▶ 再生", width=10, command=self.toggle_play)
+        self.btn_play.pack(side=tk.LEFT, padx=5)
+
+        # 確定/キャンセル
+        fb = tk.Frame(self.win)
+        fb.pack(pady=8)
+        tk.Button(fb, text="この範囲で圧縮", width=18, height=2,
+                  command=self.on_confirm, bg="#007bff", fg="white",
+                  font=("Meiryo", 10, "bold")).pack(side=tk.LEFT, padx=8)
+        tk.Button(fb, text="トリミングなしで圧縮", width=18, height=2,
+                  command=self.on_no_trim).pack(side=tk.LEFT, padx=8)
+        tk.Button(fb, text="キャンセル", width=10, height=2,
+                  command=self.on_cancel).pack(side=tk.LEFT, padx=8)
+
+        # 音声抽出ステータス
+        self.audio_status = tk.Label(self.win, text="♪ 音声読込中...", fg="#999",
+                                     font=("Meiryo", 8))
+        self.audio_status.pack()
+
+        # 初期フレーム
+        self._seek_show(0)
+        # 音声を裏で抽出
+        threading.Thread(target=self._extract_audio, daemon=True).start()
+
+    def _extract_audio(self):
+        """ffmpegで音声をWAVに抽出する（バックグラウンド）。"""
+        try:
+            cmd = [get_tool_path('ffmpeg'), '-y', '-i', self.video_path,
+                   '-vn', '-ac', '2', '-ar', '44100', '-acodec', 'pcm_s16le',
+                   self.temp_audio]
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            subprocess.run(cmd, startupinfo=si, check=True,
+                           capture_output=True)
+            # MCI はスレッド親和性があるため、メインスレッドでロード
+            self.win.after(0, self._load_audio_on_main)
+        except Exception:
+            self.audio_ready = False
+            self.win.after(0, lambda: self.audio_status.config(
+                text="♪ 音声なし", fg="#999"))
+
+    def _load_audio_on_main(self):
+        """メインスレッドで音声をMCIにロードする。"""
+        ok = self.audio_player.load(self.temp_audio)
+        self.audio_ready = ok
+        self.audio_status.config(
+            text="♪ 音声準備完了" if ok else "♪ 音声なし",
+            fg="#28a745" if ok else "#999")
+
+    def _seek_show(self, seconds):
+        """指定秒にシークしてフレーム表示。"""
+        seconds = max(0, min(seconds, self.duration))
+        fn = max(0, min(int(seconds * self.fps), self.total_frames - 1))
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, fn)
+        ret, frame = self.cap.read()
+        if ret:
+            self.current_pos = seconds
+            self._show(frame)
+            self.time_label.config(
+                text=f"{format_time(seconds)} / {format_time(self.duration)}")
+
+    def _show(self, frame):
+        """cv2フレームをtkinterに表示。"""
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame, (self.PW, self.PH))
+        img = ImageTk.PhotoImage(Image.fromarray(frame))
+        self.canvas.config(image=img)
+        self.canvas.imgtk = img
+
+    def on_range_change(self, handle, val):
+        """スライダー操作時のプレビュー更新。"""
+        self.start_lbl.config(text=f"● 始点: {format_time(self.slider.get_start())}")
+        self.end_lbl.config(text=f"● 終点: {format_time(self.slider.get_end())}")
+        dur = self.slider.get_end() - self.slider.get_start()
+        self.range_label.config(text=f"選択範囲: {format_time(max(0, dur))}")
+        # 再生中にハンドルを操作したら停止してシーク
+        if self.playing:
+            self.stop_play()
+        # プレビューは常に再生位置ハンドルの位置を表示
+        self._seek_show(self.slider.get_pos())
+
+    def toggle_play(self):
+        if self.playing:
+            self.stop_play()
+        else:
+            self.start_play()
+
+    def start_play(self):
+        self.playing = True
+        self.btn_play.config(text="■ 停止")
+        # 再生位置ハンドルの現在位置から再生開始
+        start_pos = self.slider.get_pos()
+        # 再生位置が終点にいたら始点に戻す
+        if start_pos >= self.slider.get_end() - 0.1:
+            start_pos = self.slider.get_start()
+            self.slider.set_pos(start_pos)
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(start_pos * self.fps))
+        self.play_wall_start = time.time()
+        self.play_pos_start = start_pos
+        # 音声再生
+        if self.audio_ready:
+            self.audio_player.play_from(start_pos)
+        self._play_tick()
+
+    def stop_play(self):
+        self.playing = False
+        if hasattr(self, 'btn_play'):
+            self.btn_play.config(text="▶ 再生")
+        if self.play_job:
+            self.win.after_cancel(self.play_job)
+            self.play_job = None
+        if self.audio_ready:
+            self.audio_player.stop()
+        self.slider.clear_playback_pos()
+
+    def _play_tick(self):
+        if not self.playing:
+            return
+
+        elapsed = time.time() - self.play_wall_start
+        target = self.play_pos_start + elapsed
+        end = self.slider.get_end()
+
+        if target >= end:
+            self._seek_show(end)
+            self.stop_play()
+            return
+
+        # フレームを順次読み込み、遅れている場合はスキップ
+        target_frame = int(target * self.fps)
+        cur_frame = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+
+        if target_frame > cur_frame + 5:
+            # 大幅に遅れ→シーク
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = self.cap.read()
+        else:
+            # 順次読み込み（不要フレームはスキップ）
+            ret, frame = True, None
+            while cur_frame < target_frame and ret:
+                ret, frame = self.cap.read()
+                cur_frame += 1
+            if frame is None:
+                ret, frame = self.cap.read()
+
+        if ret and frame is not None:
+            self.current_pos = target
+            self._show(frame)
+            self.time_label.config(
+                text=f"{format_time(target)} / {format_time(self.duration)}")
+            self.slider.set_playback_pos(target)
+
+        self.play_job = self.win.after(33, self._play_tick)  # ~30fps表示
+
+    def on_confirm(self):
+        self.stop_play()
+        s, e = self.slider.get_start(), self.slider.get_end()
+        self._cleanup()
+        self.callback((s, e))
+
+    def on_no_trim(self):
+        self.stop_play()
+        self._cleanup()
+        self.callback((0, self.duration))
+
+    def on_cancel(self):
+        self.stop_play()
+        self._cleanup()
+        self.callback(None)
+
+    def _cleanup(self):
+        self.audio_player.close()
+        self.cap.release()
+        self.win.destroy()
+        try:
+            if os.path.exists(self.temp_audio):
+                os.remove(self.temp_audio)
+        except Exception:
+            pass
+
+
+# --- メインGUIクラス ---
 
 class DiscordCompressorApp:
     def __init__(self, root):
@@ -45,45 +452,46 @@ class DiscordCompressorApp:
         self.root.geometry("450x340")
         self.root.resizable(False, False)
 
-        # UI構築
-        self.label_title = tk.Label(root, text="動画をDiscordサイズに圧縮", font=("Meiryo", 14, "bold"))
+        self.label_title = tk.Label(root, text="動画をDiscordサイズに圧縮",
+                                    font=("Meiryo", 14, "bold"))
         self.label_title.pack(pady=10)
 
-        # 設定エリア
-        self.frame_size = tk.Frame(root)
-        self.frame_size.pack(pady=5)
-        tk.Label(self.frame_size, text="目標サイズ (MB):").pack(side=tk.LEFT)
-        self.entry_size = tk.Entry(self.frame_size, width=5)
+        # 目標サイズ
+        fs = tk.Frame(root)
+        fs.pack(pady=5)
+        tk.Label(fs, text="目標サイズ (MB):").pack(side=tk.LEFT)
+        self.entry_size = tk.Entry(fs, width=5)
         self.entry_size.insert(0, "9.5")
         self.entry_size.pack(side=tk.LEFT, padx=5)
 
-        # 音声チャンネル設定
-        self.frame_audio = tk.Frame(root)
-        self.frame_audio.pack(pady=5)
-        tk.Label(self.frame_audio, text="音声チャンネル:").pack(side=tk.LEFT)
+        # 音声チャンネル
+        fa = tk.Frame(root)
+        fa.pack(pady=5)
+        tk.Label(fa, text="音声チャンネル:").pack(side=tk.LEFT)
         self.audio_channel = tk.StringVar(value="stereo")
-        tk.Radiobutton(self.frame_audio, text="ステレオ（変更なし）", variable=self.audio_channel, value="stereo").pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(self.frame_audio, text="モノラル", variable=self.audio_channel, value="mono").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(fa, text="ステレオ（変更なし）", variable=self.audio_channel,
+                       value="stereo").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(fa, text="モノラル", variable=self.audio_channel,
+                       value="mono").pack(side=tk.LEFT, padx=5)
 
-        # ボタンエリア
-        self.btn_select = tk.Button(root, text="動画ファイルを選択して開始", command=self.select_file, height=2, bg="#e1e1e1")
+        # ボタン
+        self.btn_select = tk.Button(root, text="動画ファイルを選択して開始",
+                                    command=self.select_file, height=2, bg="#e1e1e1")
         self.btn_select.pack(pady=15, fill=tk.X, padx=30)
         self.btn_select.config(state=tk.DISABLED)
 
-        # ステータスエリア
+        # ステータス
         self.status_label = tk.Label(root, text="起動中...", fg="gray")
         self.status_label.pack(pady=5)
-
-        self.progress = ttk.Progressbar(root, orient=tk.HORIZONTAL, length=350, mode='determinate')
+        self.progress = ttk.Progressbar(root, orient=tk.HORIZONTAL, length=350,
+                                        mode='determinate')
         self.progress.pack(pady=10)
         self.progress['value'] = 0
 
-        # 起動時にFFmpegチェック
         self.check_ffmpeg_setup()
 
     def update_status(self, message, color="black", progress_mode=None):
         self.status_label.config(text=message, fg=color)
-        
         if progress_mode == 'start':
             self.progress.config(mode='indeterminate')
             self.progress.start(10)
@@ -92,127 +500,120 @@ class DiscordCompressorApp:
             self.progress.config(mode='determinate')
             self.progress['value'] = 0
 
-    # --- 自動インストール処理 ---
     def check_ffmpeg_setup(self):
         threading.Thread(target=self._setup_ffmpeg_thread, daemon=True).start()
 
     def _setup_ffmpeg_thread(self):
-        ffmpeg_path = get_tool_path('ffmpeg')
-        ffprobe_path = get_tool_path('ffprobe')
-
-        if ffmpeg_path and ffprobe_path and os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
+        fp = get_tool_path('ffmpeg')
+        pp = get_tool_path('ffprobe')
+        if fp and pp and os.path.exists(fp) and os.path.exists(pp):
             self.root.after(0, lambda: self.update_status("準備完了", "gray"))
             self.root.after(0, lambda: self.btn_select.config(state=tk.NORMAL))
             return
-
-        self.root.after(0, lambda: self.update_status("FFmpegダウンロード中... (初回のみ)", "blue", 'start'))
-        
+        self.root.after(0, lambda: self.update_status(
+            "FFmpegダウンロード中... (初回のみ)", "blue", 'start'))
         try:
             url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-            zip_name = "ffmpeg_temp.zip"
-            base_dir = get_base_path() # ← ここが修正されたので、EXEの隣に保存される
-
-            urllib.request.urlretrieve(url, os.path.join(base_dir, zip_name))
+            base_dir = get_base_path()
+            zip_path = os.path.join(base_dir, "ffmpeg_temp.zip")
+            urllib.request.urlretrieve(url, zip_path)
             self.root.after(0, lambda: self.update_status("展開中...", "blue"))
-
-            with zipfile.ZipFile(os.path.join(base_dir, zip_name), 'r') as zip_ref:
-                for file in zip_ref.namelist():
-                    if file.endswith("bin/ffmpeg.exe"):
-                        with open(os.path.join(base_dir, "ffmpeg.exe"), "wb") as f_out:
-                            f_out.write(zip_ref.read(file))
-                    elif file.endswith("bin/ffprobe.exe"):
-                        with open(os.path.join(base_dir, "ffprobe.exe"), "wb") as f_out:
-                            f_out.write(zip_ref.read(file))
-
-            if os.path.exists(os.path.join(base_dir, zip_name)):
-                os.remove(os.path.join(base_dir, zip_name))
-
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for f in zf.namelist():
+                    if f.endswith("bin/ffmpeg.exe"):
+                        with open(os.path.join(base_dir, "ffmpeg.exe"), "wb") as out:
+                            out.write(zf.read(f))
+                    elif f.endswith("bin/ffprobe.exe"):
+                        with open(os.path.join(base_dir, "ffprobe.exe"), "wb") as out:
+                            out.write(zf.read(f))
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
             self.root.after(0, lambda: self.update_status("セットアップ完了！", "green", 'stop'))
             self.root.after(0, lambda: self.btn_select.config(state=tk.NORMAL))
-            messagebox.showinfo("完了", "セットアップが完了しました。\nEXEファイルと同じ場所にffmpeg.exeが保存されました。")
-
+            messagebox.showinfo("完了", "セットアップが完了しました。")
         except Exception as e:
             self.root.after(0, lambda: self.update_status("セットアップ失敗", "red", 'stop'))
             messagebox.showerror("エラー", f"エラー: {e}")
 
-    # --- 圧縮処理 ---
-
     def select_file(self):
-        input_path = filedialog.askopenfilename(
+        path = filedialog.askopenfilename(
             title="圧縮する動画を選択",
-            filetypes=[("Video Files", "*.mp4 *.mov *.avi *.mkv"), ("All Files", "*.*")]
-        )
-        if not input_path:
+            filetypes=[("Video Files", "*.mp4 *.mov *.avi *.mkv"), ("All Files", "*.*")])
+        if not path:
             return
+        self.current_input = path
+        TrimWindow(self.root, path, self.on_trim_done)
 
-        default_filename = os.path.splitext(os.path.basename(input_path))[0] + "_discord.mp4"
-        
-        output_path = filedialog.asksaveasfilename(
-            title="保存先を指定してください",
-            initialfile=default_filename,
-            defaultextension=".mp4",
-            filetypes=[("MP4 Files", "*.mp4")]
-        )
-
-        if not output_path:
+    def on_trim_done(self, result):
+        if result is None:
             return
+        trim_start, trim_end = result
+        default_fn = os.path.splitext(os.path.basename(self.current_input))[0] + "_discord.mp4"
+        output = filedialog.asksaveasfilename(
+            title="保存先を指定してください", initialfile=default_fn,
+            defaultextension=".mp4", filetypes=[("MP4 Files", "*.mp4")])
+        if not output:
+            return
+        threading.Thread(target=self.run_compression,
+                         args=(self.current_input, output, trim_start, trim_end),
+                         daemon=True).start()
 
-        threading.Thread(target=self.run_compression, args=(input_path, output_path), daemon=True).start()
+    def get_duration(self, path):
+        cmd = [get_tool_path('ffprobe'), '-v', 'error', '-show_entries',
+               'format=duration', '-of', 'json', path]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        r = subprocess.run(cmd, capture_output=True, text=True, startupinfo=si, check=True)
+        return float(json.loads(r.stdout)['format']['duration'])
 
-    def get_duration(self, input_path):
-        ffprobe_cmd = get_tool_path('ffprobe')
-        cmd = [ffprobe_cmd, '-v', 'error', '-show_entries', 'format=duration', '-of', 'json', input_path]
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo, check=True)
-        return float(json.loads(result.stdout)['format']['duration'])
-
-    def run_compression(self, input_path, output_path):
+    def run_compression(self, input_path, output_path, trim_start=0, trim_end=None):
         self.btn_select.config(state=tk.DISABLED)
         self.update_status("解析中...", "blue", 'start')
-
         try:
-            ffmpeg_cmd = get_tool_path('ffmpeg')
-            
+            ffmpeg = get_tool_path('ffmpeg')
             target_mb = float(self.entry_size.get())
-            duration = self.get_duration(input_path)
+            full_dur = self.get_duration(input_path)
+            if trim_end is None or trim_end >= full_dur:
+                trim_end = full_dur
+            duration = trim_end - trim_start
+            if duration <= 0:
+                raise ValueError("トリミング後の長さが0以下です。")
 
             audio_kbps = 128
-            target_total_bits = target_mb * 8 * 1024 * 1024
+            total_bits = target_mb * 8 * 1024 * 1024
             audio_bits = audio_kbps * 1024 * duration
-            video_bits_available = target_total_bits - audio_bits
-            video_bitrate = video_bits_available / duration
-
-            if video_bitrate < 10000:
+            vbr = (total_bits - audio_bits) / duration
+            if vbr < 10000:
                 raise ValueError("動画が長すぎます。")
 
-            self.update_status(f"エンコード中... ({int(video_bitrate/1000)}kbps)", "orange")
-
-            cmd = [
-                ffmpeg_cmd, '-y',
-                '-i', input_path,
-                '-c:v', 'libx264', '-b:v', f'{int(video_bitrate)}',
-                '-maxrate', f'{int(video_bitrate * 1.5)}', '-bufsize', f'{int(video_bitrate * 2)}',
+            self.update_status(f"エンコード中... ({int(vbr/1000)}kbps)", "orange")
+            cmd = [ffmpeg, '-y']
+            if trim_start > 0:
+                cmd.extend(['-ss', str(trim_start)])
+            cmd.extend(['-i', input_path])
+            if trim_end < full_dur:
+                cmd.extend(['-t', str(duration)])
+            cmd.extend([
+                '-c:v', 'libx264', '-b:v', f'{int(vbr)}',
+                '-maxrate', f'{int(vbr * 1.5)}', '-bufsize', f'{int(vbr * 2)}',
                 '-c:a', 'aac', '-b:a', f'{audio_kbps}k',
-            ]
+            ])
             if self.audio_channel.get() == "mono":
                 cmd.extend(['-ac', '1'])
             cmd.append(output_path)
-            
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            subprocess.run(cmd, check=True, startupinfo=startupinfo)
 
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            subprocess.run(cmd, check=True, startupinfo=si)
             self.update_status("完了！", "green", 'stop')
             messagebox.showinfo("成功", f"保存しました:\n{output_path}")
-
         except Exception as e:
             self.update_status("エラー", "red", 'stop')
             messagebox.showerror("エラー", str(e))
         finally:
             self.btn_select.config(state=tk.NORMAL)
-            if "エラー" not in self.status_label.cget("text") and "完了" not in self.status_label.cget("text"):
+            txt = self.status_label.cget("text")
+            if "エラー" not in txt and "完了" not in txt:
                 self.update_status("待機中...", "gray")
 
 if __name__ == "__main__":
