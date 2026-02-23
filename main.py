@@ -11,6 +11,67 @@ import urllib.request
 import zipfile
 import shutil
 import ctypes
+
+
+def ensure_packages():
+    """不足しているPythonパッケージを自動インストールする。"""
+    if getattr(sys, 'frozen', False):
+        return  # exe実行時はバンドル済みなのでスキップ
+
+    missing = []
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        missing.append('opencv-python')
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        missing.append('Pillow')
+
+    if not missing:
+        return
+
+    msg = (
+        f"以下のパッケージが不足しています:\n"
+        f"{', '.join(missing)}\n\n"
+        f"自動インストールしますか？"
+    )
+    temp_root = tk.Tk()
+    temp_root.withdraw()
+    answer = messagebox.askyesno("パッケージ不足", msg, parent=temp_root)
+    if not answer:
+        messagebox.showwarning(
+            "警告", "必要なパッケージがないため終了します。", parent=temp_root
+        )
+        temp_root.destroy()
+        sys.exit(1)
+
+    try:
+        for pkg in missing:
+            subprocess.check_call(
+                [sys.executable, '-m', 'pip', 'install', pkg]
+            )
+        messagebox.showinfo(
+            "完了",
+            "パッケージのインストールが完了しました。\nアプリを再起動します。",
+            parent=temp_root,
+        )
+        temp_root.destroy()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        messagebox.showerror(
+            "エラー",
+            f"インストールに失敗しました:\n{e}\n\n"
+            f"手動で以下を実行してください:\n"
+            f"pip install {' '.join(missing)}",
+            parent=temp_root,
+        )
+        temp_root.destroy()
+        sys.exit(1)
+
+
+ensure_packages()
+
 import cv2
 from PIL import Image, ImageTk
 
