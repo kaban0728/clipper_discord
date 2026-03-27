@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import customtkinter as ctk
 import os
 import subprocess
 import json
@@ -27,6 +28,10 @@ def ensure_packages():
         from PIL import Image  # noqa: F401
     except ImportError:
         missing.append('Pillow')
+    try:
+        import customtkinter  # noqa: F401
+    except ImportError:
+        missing.append('customtkinter')
 
     if not missing:
         return
@@ -178,11 +183,11 @@ class RangeSlider(tk.Canvas):
         # トラック背景
         self.create_rectangle(self.pad, cy - self.th//2,
                               self.cw - self.pad, cy + self.th//2,
-                              fill='#e0e0e0', outline='#ccc')
+                              fill='#555555', outline='')
         sx, ex = self._v2x(self.start_val), self._v2x(self.end_val)
         # 選択範囲
         self.create_rectangle(sx, cy - self.th//2, ex, cy + self.th//2,
-                              fill='#5b9bd5', outline='')
+                              fill='#1f6aa5', outline='')
         # 再生位置ハンドル（白丸 + 青枠）
         px = self._v2x(self.pos_val)
         self.create_line(px, cy - 16, px, cy + 16, fill='#555', width=1)
@@ -285,7 +290,7 @@ class TrimWindow:
         self.duration = self.total_frames / self.fps
 
         # ウィンドウ
-        self.win = tk.Toplevel(parent)
+        self.win = ctk.CTkToplevel(parent)
         self.win.title("トリミング — プレビュー")
         self.win.resizable(False, False)
         self.win.protocol("WM_DELETE_WINDOW", self.on_cancel)
@@ -296,50 +301,51 @@ class TrimWindow:
         self.canvas.pack(padx=10, pady=(10, 5))
 
         # 時間情報
-        fi = tk.Frame(self.win)
+        fi = ctk.CTkFrame(self.win, fg_color="transparent")
         fi.pack(fill=tk.X, padx=15)
-        self.time_label = tk.Label(fi, text=f"00:00:00.00 / {format_time(self.duration)}",
-                                   font=("Consolas", 10))
+        self.time_label = ctk.CTkLabel(fi, text=f"00:00:00.00 / {format_time(self.duration)}",
+                                       font=("Consolas", 12))
         self.time_label.pack(side=tk.LEFT)
-        self.range_label = tk.Label(fi, text=f"選択範囲: {format_time(self.duration)}",
-                                    font=("Consolas", 10), fg="#555")
+        self.range_label = ctk.CTkLabel(fi, text=f"選択範囲: {format_time(self.duration)}",
+                                        font=("Consolas", 12), text_color="gray")
         self.range_label.pack(side=tk.RIGHT)
 
         # レンジスライダー
         self.slider = RangeSlider(self.win, 0, self.duration, width=640, height=50,
                                   command=self.on_range_change)
+        self.slider.config(bg="#242424")  # CTk dark mode background default
         self.slider.pack(padx=10)
 
         # 始点/終点ラベル
-        fl = tk.Frame(self.win)
+        fl = ctk.CTkFrame(self.win, fg_color="transparent")
         fl.pack(fill=tk.X, padx=25)
-        self.start_lbl = tk.Label(fl, text="● 始点: 00:00:00.00",
-                                   fg="#28a745", font=("Consolas", 9))
+        self.start_lbl = ctk.CTkLabel(fl, text="● 始点: 00:00:00.00",
+                                      text_color="#28a745", font=("Consolas", 12, "bold"))
         self.start_lbl.pack(side=tk.LEFT)
-        self.end_lbl = tk.Label(fl, text=f"● 終点: {format_time(self.duration)}",
-                                 fg="#dc3545", font=("Consolas", 9))
+        self.end_lbl = ctk.CTkLabel(fl, text=f"● 終点: {format_time(self.duration)}",
+                                    text_color="#dc3545", font=("Consolas", 12, "bold"))
         self.end_lbl.pack(side=tk.RIGHT)
 
         # 再生コントロール
-        fc = tk.Frame(self.win)
+        fc = ctk.CTkFrame(self.win, fg_color="transparent")
         fc.pack(pady=8)
-        self.btn_play = tk.Button(fc, text="▶ 再生", width=10, command=self.toggle_play)
+        self.btn_play = ctk.CTkButton(fc, text="▶ 再生", width=120, height=32, command=self.toggle_play)
         self.btn_play.pack(side=tk.LEFT, padx=5)
 
         # 確定/キャンセル
-        fb = tk.Frame(self.win)
+        fb = ctk.CTkFrame(self.win, fg_color="transparent")
         fb.pack(pady=8)
-        tk.Button(fb, text="この範囲で圧縮", width=18, height=2,
-                  command=self.on_confirm, bg="#007bff", fg="white",
-                  font=("Meiryo", 10, "bold")).pack(side=tk.LEFT, padx=8)
-        tk.Button(fb, text="トリミングなしで圧縮", width=18, height=2,
-                  command=self.on_no_trim).pack(side=tk.LEFT, padx=8)
-        tk.Button(fb, text="キャンセル", width=10, height=2,
-                  command=self.on_cancel).pack(side=tk.LEFT, padx=8)
+        ctk.CTkButton(fb, text="この範囲で圧縮", width=180, height=36,
+                      command=self.on_confirm, fg_color="#1f6aa5", font=("Meiryo", 12, "bold")).pack(side=tk.LEFT, padx=8)
+        ctk.CTkButton(fb, text="トリミングなしで圧縮", width=180, height=36,
+                      command=self.on_no_trim, fg_color="gray", font=("Meiryo", 12)).pack(side=tk.LEFT, padx=8)
+        ctk.CTkButton(fb, text="キャンセル", width=100, height=36,
+                      command=self.on_cancel, fg_color="transparent", border_width=1,
+                      text_color=("gray10", "gray90")).pack(side=tk.LEFT, padx=8)
 
         # 音声抽出ステータス
-        self.audio_status = tk.Label(self.win, text="♪ 音声読込中...", fg="#999",
-                                     font=("Meiryo", 8))
+        self.audio_status = ctk.CTkLabel(self.win, text="♪ 音声読込中...", text_color="gray",
+                                         font=("Meiryo", 11))
         self.audio_status.pack()
 
         # 初期フレーム
@@ -361,16 +367,16 @@ class TrimWindow:
             self.win.after(0, self._load_audio_on_main)
         except Exception:
             self.audio_ready = False
-            self.win.after(0, lambda: self.audio_status.config(
-                text="♪ 音声なし", fg="#999"))
+            self.win.after(0, lambda: self.audio_status.configure(
+                text="♪ 音声なし", text_color="gray"))
 
     def _load_audio_on_main(self):
         """メインスレッドで音声をMCIにロードする。"""
         ok = self.audio_player.load(self.temp_audio)
         self.audio_ready = ok
-        self.audio_status.config(
+        self.audio_status.configure(
             text="♪ 音声準備完了" if ok else "♪ 音声なし",
-            fg="#28a745" if ok else "#999")
+            text_color="#28a745" if ok else "gray")
 
     def _seek_show(self, seconds):
         """指定秒にシークしてフレーム表示。"""
@@ -381,7 +387,7 @@ class TrimWindow:
         if ret:
             self.current_pos = seconds
             self._show(frame)
-            self.time_label.config(
+            self.time_label.configure(
                 text=f"{format_time(seconds)} / {format_time(self.duration)}")
 
     def _show(self, frame):
@@ -394,10 +400,10 @@ class TrimWindow:
 
     def on_range_change(self, handle, val):
         """スライダー操作時のプレビュー更新。"""
-        self.start_lbl.config(text=f"● 始点: {format_time(self.slider.get_start())}")
-        self.end_lbl.config(text=f"● 終点: {format_time(self.slider.get_end())}")
+        self.start_lbl.configure(text=f"● 始点: {format_time(self.slider.get_start())}")
+        self.end_lbl.configure(text=f"● 終点: {format_time(self.slider.get_end())}")
         dur = self.slider.get_end() - self.slider.get_start()
-        self.range_label.config(text=f"選択範囲: {format_time(max(0, dur))}")
+        self.range_label.configure(text=f"選択範囲: {format_time(max(0, dur))}")
         # 再生中にハンドルを操作したら停止してシーク
         if self.playing:
             self.stop_play()
@@ -412,7 +418,7 @@ class TrimWindow:
 
     def start_play(self):
         self.playing = True
-        self.btn_play.config(text="■ 停止")
+        self.btn_play.configure(text="■ 停止")
         # 再生位置ハンドルの現在位置から再生開始
         start_pos = self.slider.get_pos()
         # 再生位置が終点にいたら始点に戻す
@@ -430,7 +436,7 @@ class TrimWindow:
     def stop_play(self):
         self.playing = False
         if hasattr(self, 'btn_play'):
-            self.btn_play.config(text="▶ 再生")
+            self.btn_play.configure(text="▶ 再生")
         if self.play_job:
             self.win.after_cancel(self.play_job)
             self.play_job = None
@@ -471,7 +477,7 @@ class TrimWindow:
         if ret and frame is not None:
             self.current_pos = target
             self._show(frame)
-            self.time_label.config(
+            self.time_label.configure(
                 text=f"{format_time(target)} / {format_time(self.duration)}")
             self.slider.set_playback_pos(target)
 
@@ -510,56 +516,56 @@ class DiscordCompressorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Discord用 動画圧縮ツール")
-        self.root.geometry("450x340")
+        self.root.geometry("450x390")
         self.root.resizable(False, False)
 
-        self.label_title = tk.Label(root, text="動画をDiscordサイズに圧縮",
-                                    font=("Meiryo", 14, "bold"))
-        self.label_title.pack(pady=10)
+        self.label_title = ctk.CTkLabel(root, text="動画をDiscordサイズに圧縮",
+                                        font=("Meiryo", 16, "bold"))
+        self.label_title.pack(pady=15)
 
         # 目標サイズ
-        fs = tk.Frame(root)
-        fs.pack(pady=5)
-        tk.Label(fs, text="目標サイズ (MB):").pack(side=tk.LEFT)
-        self.entry_size = tk.Entry(fs, width=5)
+        fs = ctk.CTkFrame(root, fg_color="transparent")
+        fs.pack(pady=10)
+        ctk.CTkLabel(fs, text="目標サイズ (MB):").pack(side=tk.LEFT, padx=5)
+        self.entry_size = ctk.CTkEntry(fs, width=70)
         self.entry_size.insert(0, "9.5")
         self.entry_size.pack(side=tk.LEFT, padx=5)
 
         # 音声チャンネル
-        fa = tk.Frame(root)
-        fa.pack(pady=5)
-        tk.Label(fa, text="音声チャンネル:").pack(side=tk.LEFT)
+        fa = ctk.CTkFrame(root, fg_color="transparent")
+        fa.pack(pady=10)
+        ctk.CTkLabel(fa, text="音声チャンネル:").pack(side=tk.LEFT, padx=5)
         self.audio_channel = tk.StringVar(value="stereo")
-        tk.Radiobutton(fa, text="ステレオ（変更なし）", variable=self.audio_channel,
-                       value="stereo").pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(fa, text="モノラル", variable=self.audio_channel,
-                       value="mono").pack(side=tk.LEFT, padx=5)
+        ctk.CTkRadioButton(fa, text="ステレオ", variable=self.audio_channel,
+                           value="stereo").pack(side=tk.LEFT, padx=10)
+        ctk.CTkRadioButton(fa, text="モノラル", variable=self.audio_channel,
+                           value="mono").pack(side=tk.LEFT, padx=10)
 
         # ボタン
-        self.btn_select = tk.Button(root, text="動画ファイルを選択して開始",
-                                    command=self.select_file, height=2, bg="#e1e1e1")
-        self.btn_select.pack(pady=15, fill=tk.X, padx=30)
-        self.btn_select.config(state=tk.DISABLED)
+        self.btn_select = ctk.CTkButton(root, text="動画ファイルを選択して開始",
+                                        command=self.select_file, height=45,
+                                        font=("Meiryo", 14, "bold"))
+        self.btn_select.pack(pady=20, fill=tk.X, padx=40)
+        self.btn_select.configure(state="disabled")
 
         # ステータス
-        self.status_label = tk.Label(root, text="起動中...", fg="gray")
+        self.status_label = ctk.CTkLabel(root, text="起動中...", text_color="gray")
         self.status_label.pack(pady=5)
-        self.progress = ttk.Progressbar(root, orient=tk.HORIZONTAL, length=350,
-                                        mode='determinate')
+        self.progress = ctk.CTkProgressBar(root, width=350)
         self.progress.pack(pady=10)
-        self.progress['value'] = 0
+        self.progress.set(0)
 
         self.check_ffmpeg_setup()
 
-    def update_status(self, message, color="black", progress_mode=None):
-        self.status_label.config(text=message, fg=color)
+    def update_status(self, message, color="gray", progress_mode=None):
+        self.status_label.configure(text=message, text_color=color)
         if progress_mode == 'start':
-            self.progress.config(mode='indeterminate')
-            self.progress.start(10)
+            self.progress.configure(mode='indeterminate')
+            self.progress.start()
         elif progress_mode == 'stop':
             self.progress.stop()
-            self.progress.config(mode='determinate')
-            self.progress['value'] = 0
+            self.progress.configure(mode='determinate')
+            self.progress.set(0)
 
     def check_ffmpeg_setup(self):
         threading.Thread(target=self._setup_ffmpeg_thread, daemon=True).start()
@@ -569,10 +575,10 @@ class DiscordCompressorApp:
         pp = get_tool_path('ffprobe')
         if fp and pp and os.path.exists(fp) and os.path.exists(pp):
             self.root.after(0, lambda: self.update_status("準備完了", "gray"))
-            self.root.after(0, lambda: self.btn_select.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.btn_select.configure(state="normal"))
             return
         self.root.after(0, lambda: self.update_status(
-            "FFmpegダウンロード中... (初回のみ)", "blue", 'start'))
+            "FFmpegダウンロード中... (初回のみ)", "#1f6aa5", 'start'))
         try:
             url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
             base_dir = get_base_path()
@@ -589,11 +595,11 @@ class DiscordCompressorApp:
                             out.write(zf.read(f))
             if os.path.exists(zip_path):
                 os.remove(zip_path)
-            self.root.after(0, lambda: self.update_status("セットアップ完了！", "green", 'stop'))
-            self.root.after(0, lambda: self.btn_select.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.update_status("セットアップ完了！", "#28a745", 'stop'))
+            self.root.after(0, lambda: self.btn_select.configure(state="normal"))
             messagebox.showinfo("完了", "セットアップが完了しました。")
         except Exception as e:
-            self.root.after(0, lambda: self.update_status("セットアップ失敗", "red", 'stop'))
+            self.root.after(0, lambda: self.update_status("セットアップ失敗", "#dc3545", 'stop'))
             messagebox.showerror("エラー", f"エラー: {e}")
 
     def select_file(self):
@@ -628,8 +634,8 @@ class DiscordCompressorApp:
         return float(json.loads(r.stdout)['format']['duration'])
 
     def run_compression(self, input_path, output_path, trim_start=0, trim_end=None):
-        self.btn_select.config(state=tk.DISABLED)
-        self.update_status("解析中...", "blue", 'start')
+        self.btn_select.configure(state="disabled")
+        self.update_status("解析中...", "#1f6aa5", 'start')
         try:
             ffmpeg = get_tool_path('ffmpeg')
             target_mb = float(self.entry_size.get())
@@ -640,44 +646,62 @@ class DiscordCompressorApp:
             if duration <= 0:
                 raise ValueError("トリミング後の長さが0以下です。")
 
-            audio_kbps = 128
-            total_bits = target_mb * 8 * 1024 * 1024
-            audio_bits = audio_kbps * 1024 * duration
-            vbr = (total_bits - audio_bits) / duration
-            if vbr < 10000:
-                raise ValueError("動画が長すぎます。")
+            while True:
+                audio_kbps = 128
+                total_bits = target_mb * 8 * 1024 * 1024
+                audio_bits = audio_kbps * 1024 * duration
+                vbr = (total_bits - audio_bits) / duration
+                if vbr < 10000:
+                    raise ValueError("動画が長すぎます。")
 
-            self.update_status(f"エンコード中... ({int(vbr/1000)}kbps)", "orange")
-            cmd = [ffmpeg, '-y']
-            if trim_start > 0:
-                cmd.extend(['-ss', str(trim_start)])
-            cmd.extend(['-i', input_path])
-            if trim_end < full_dur:
-                cmd.extend(['-t', str(duration)])
-            cmd.extend([
-                '-c:v', 'libx264', '-b:v', f'{int(vbr)}',
-                '-maxrate', f'{int(vbr * 1.5)}', '-bufsize', f'{int(vbr * 2)}',
-                '-c:a', 'aac', '-b:a', f'{audio_kbps}k',
-            ])
-            if self.audio_channel.get() == "mono":
-                cmd.extend(['-ac', '1'])
-            cmd.append(output_path)
+                self.update_status(f"エンコード中... ({int(vbr/1000)}kbps)", "#f69c0d")
+                cmd = [ffmpeg, '-y']
+                if trim_start > 0:
+                    cmd.extend(['-ss', str(trim_start)])
+                cmd.extend(['-i', input_path])
+                if trim_end < full_dur:
+                    cmd.extend(['-t', str(duration)])
+                cmd.extend([
+                    '-c:v', 'libx264', '-b:v', f'{int(vbr)}',
+                    '-maxrate', f'{int(vbr * 1.5)}', '-bufsize', f'{int(vbr * 2)}',
+                    '-c:a', 'aac', '-b:a', f'{audio_kbps}k',
+                ])
+                if self.audio_channel.get() == "mono":
+                    cmd.extend(['-ac', '1'])
+                cmd.append(output_path)
 
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            subprocess.run(cmd, check=True, startupinfo=si)
-            self.update_status("完了！", "green", 'stop')
-            messagebox.showinfo("成功", f"保存しました:\n{output_path}")
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                subprocess.run(cmd, check=True, startupinfo=si)
+
+                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                if file_size_mb >= 10.0:
+                    try:
+                        os.remove(output_path)
+                    except Exception:
+                        pass
+                    target_mb -= 0.5
+                    if target_mb <= 0:
+                        raise ValueError("目標サイズを下げて再試行しましたが、10MB以下にできませんでした。")
+                    self.update_status(f"サイズ超過({file_size_mb:.2f}MB)。目標サイズを{target_mb:.1f}MBに下げて再試行中...", "#f69c0d")
+                    continue
+                else:
+                    break
+
+            self.update_status("完了！", "#28a745", 'stop')
+            messagebox.showinfo("成功", f"保存しました:\n{output_path}\nサイズ: {file_size_mb:.2f}MB")
         except Exception as e:
-            self.update_status("エラー", "red", 'stop')
+            self.update_status("エラー", "#dc3545", 'stop')
             messagebox.showerror("エラー", str(e))
         finally:
-            self.btn_select.config(state=tk.NORMAL)
+            self.btn_select.configure(state="normal")
             txt = self.status_label.cget("text")
             if "エラー" not in txt and "完了" not in txt:
                 self.update_status("待機中...", "gray")
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     app = DiscordCompressorApp(root)
     root.mainloop()
