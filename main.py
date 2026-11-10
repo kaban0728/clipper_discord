@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import customtkinter as ctk
 import os
 import subprocess
 import json
@@ -77,6 +76,7 @@ def ensure_packages():
 
 ensure_packages()
 
+import customtkinter as ctk
 import cv2
 from PIL import Image, ImageTk
 
@@ -639,6 +639,8 @@ class DiscordCompressorApp:
         try:
             ffmpeg = get_tool_path('ffmpeg')
             target_mb = float(self.entry_size.get())
+            if target_mb <= 0:
+                raise ValueError("目標サイズは0より大きい値を指定してください。")
             full_dur = self.get_duration(input_path)
             if trim_end is None or trim_end >= full_dur:
                 trim_end = full_dur
@@ -675,14 +677,14 @@ class DiscordCompressorApp:
                 subprocess.run(cmd, check=True, startupinfo=si)
 
                 file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-                if file_size_mb >= 10.0:
+                if file_size_mb >= target_mb:
                     try:
                         os.remove(output_path)
                     except Exception:
                         pass
                     target_mb -= 0.5
                     if target_mb <= 0:
-                        raise ValueError("目標サイズを下げて再試行しましたが、10MB以下にできませんでした。")
+                        raise ValueError("目標サイズを下げて再試行しましたが、指定サイズ以下にできませんでした。")
                     self.update_status(f"サイズ超過({file_size_mb:.2f}MB)。目標サイズを{target_mb:.1f}MBに下げて再試行中...", "#f69c0d")
                     continue
                 else:
